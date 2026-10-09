@@ -1,0 +1,70 @@
+# Copy to terraform.tfvars and fill in. Every value here is a placeholder.
+#
+# The objective is stated as a rate and a latency ceiling, not as a worker
+# count: run `terraform output fleet_plan` to see the fleet it derives and
+# `terraform output fleet_bounds` to see why.
+
+aws_region = "us-east-1"
+vpc_id     = "vpc-0123456789abcdef0"
+
+runner_subnet_ids = [
+  "subnet-0123456789abcdef0",
+  "subnet-0fedcba9876543210",
+]
+
+# public_ip costs nothing in data processing and shows the target one source
+# address per worker; private_nat shows it one address per gateway and bills
+# every byte. The choice changes what a per-source rate limit does.
+runner_egress_mode = "public_ip"
+
+target_egress_rules = [
+  {
+    cidr        = "203.0.113.0/24"
+    from_port   = 443
+    to_port     = 443
+    description = "Service under test, public entry point"
+  },
+]
+
+# The load objective.
+load_model          = "open"
+target_arrival_rate = 40000
+latency_ceiling_ms  = 2000
+connection_reuse    = true
+
+# These values derive a fleet of 14 workers at 28 vCPU, launched in two
+# requests, with each worker bounded by processor time rather than by its
+# four-tuple budget. Turning connection_reuse off with everything else
+# unchanged makes the four-tuple budget binding instead and the fleet far
+# larger, which is the point of publishing both bounds.
+
+# Set this from the target's real address count when it is known. 1 is the
+# conservative answer and sizes the fleet larger than it needs to be.
+destination_endpoint_count = 1
+
+# Measure these for the image and scenario in use. A figure carried over from
+# another image is not evidence.
+requests_per_second_per_vcpu = 1500
+virtual_users_per_vcpu       = 2500
+
+# Pin the runner image by digest. A floating tag lets two runs of the same
+# committed scenario execute different generator code.
+runner_image                = "<your-registry>/<your-runner-repository>@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+runner_image_repository_arn = "arn:aws:ecr:us-east-1:123456789012:repository/<your-runner-repository>"
+
+runner_cpu    = 2048
+runner_memory = 4096
+
+# Read this from the account's own limit, not from the documented default.
+account_fargate_vcpu_quota = 64
+
+# Interruptible capacity is for exploratory runs only; a reclaimed worker
+# withdraws load mid-run and the result reads as a regression in the target.
+capacity_on_demand_weight = 1
+capacity_spot_weight      = 0
+
+tags = {
+  Owner       = "<your-team>"
+  CostCenter  = "<your-cost-center>"
+  Environment = "performance"
+}

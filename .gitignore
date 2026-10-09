@@ -1,0 +1,43 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.terraform.lock.hcl.bak
+
+# Local variable files may carry account-specific values.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Run artifacts. Results are written to object storage by the fleet; anything
+# that lands here is a local copy of a real run and is not source.
+results/
+baselines/local/
+*.ndjson
+*.ndjson.gz
+summary-*.json
+fleet-plan-*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
