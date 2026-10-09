@@ -27,7 +27,7 @@ locals {
         "Connection reuse is off, so each request holds a four-tuple for the response time plus the %ds lingering interval, capping a worker at %.0f requests per second. Turning reuse on raises that ceiling to %.0f for the same task shape.",
         var.socket_linger_seconds,
         local.worker_rate_ceiling_sockets,
-        local.port_budget_per_worker / local.latency_ceiling_s,
+        local.effective_tuple_budget / local.latency_ceiling_s,
       )
     },
     {
@@ -92,6 +92,22 @@ locals {
       severity = "warning"
       message  = "The stop timeout is at the platform cap, which is the same length as the warning an interrupted task receives. A flush that only begins when the stop signal arrives therefore has no margin at all, and the last of the run's results are the ones lost."
     },
+    {
+      code     = "L111"
+      when     = local.tuple_budget_source == "descriptors"
+      severity = "warning"
+      message = format(
+        "The socket budget is bounded by the descriptor limit at %d, not by the %d four-tuples the port range and destination count allow. Reaching more destination addresses will not raise it; only runner_nofile_limit will. A socket that cannot be given a descriptor is a failed connection, and the run records it against the target.",
+        local.descriptor_budget_per_worker,
+        local.port_budget_per_worker,
+      )
+    },
+    {
+      code     = "L112"
+      when     = length(var.target_egress_rules) > 0 && contains(var.platform_egress_cidrs, "0.0.0.0/0")
+      severity = "warning"
+      message  = "The egress allowlist for the target is not an isolation boundary while platform_egress_cidrs reaches the whole internet, because that rule already admits any target on 443. Narrow it to interface endpoints in a private subnet, or read the target rules as documentation rather than as a constraint."
+    },
   ]
 
   sizing_findings = [
@@ -108,8 +124,9 @@ locals {
 # ---------------------------------------------------------------------------
 # Assertions
 #
-# Hosted on a resource that contacts nothing, so the sizing arithmetic and its
-# guards can be evaluated without credentials and without creating anything.
+# Hosted on a resource that contacts nothing, so every guard below is evaluated
+# before anything is created. The arithmetic itself can also be inspected with
+# no state at all through `terraform console`.
 # These are refusals rather than advice: each one describes a configuration that
 # would deploy cleanly and then produce a run whose numbers are wrong in a way
 # the run itself does not report.
@@ -130,11 +147,6 @@ resource "terraform_data" "fleet_preconditions" {
     precondition {
       condition     = local.derived_worker_count <= var.max_workers
       error_message = "The objective derives ${local.derived_worker_count} workers, above the max_workers ceiling of ${var.max_workers}. Raise the ceiling deliberately or lower the objective; the count is refused rather than clamped, because a clamped fleet offers less load than the run reports."
-    }
-
-    precondition {
-      condition     = contains(local.valid_memory_for_runner_cpu, var.runner_memory)
-      error_message = "runner_memory ${var.runner_memory} MiB is not a value permitted with runner_cpu ${var.runner_cpu}. Permitted here: ${join(", ", [for m in local.valid_memory_for_runner_cpu : tostring(m)])}."
     }
 
     precondition {

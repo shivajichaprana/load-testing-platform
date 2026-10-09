@@ -479,3 +479,129 @@ variable "start_delay_seconds" {
     error_message = "start_delay_seconds must be a whole number between 30 and 900; below 30 the slowest worker will routinely miss the start instant."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Runner task limits
+# ---------------------------------------------------------------------------
+
+variable "runner_nofile_limit" {
+  description = <<-EOT
+    Open file descriptors one runner task may hold, soft and hard.
+
+    This platform already overrides the operating system default here, and the
+    value it chooses is high enough that on a single-destination test the
+    four-tuple budget is reached first. That is the opposite of a self-managed
+    host, where the default of a thousand or so binds long before the port
+    range does, and it is why this is not the usual place to look.
+
+    It becomes the binding bound as soon as the scenario reaches enough
+    destination addresses, because the four-tuple budget grows with that count
+    while the descriptor limit does not. At the default port range the crossover
+    is at three destination addresses. A socket that cannot be given a
+    descriptor is not a slower socket; it is a failed connection the run records
+    as a target error.
+  EOT
+  type        = number
+  default     = 65535
+
+  validation {
+    condition     = var.runner_nofile_limit >= 1024 && floor(var.runner_nofile_limit) == var.runner_nofile_limit
+    error_message = "runner_nofile_limit must be a whole number of at least 1024."
+  }
+}
+
+variable "reserved_descriptors" {
+  description = "Descriptors withheld from the socket budget for everything that is not a connection: the scenario files, the result stream, the log pipe, the runtime's own handles. Subtracted rather than ignored, because a budget computed to the last descriptor fails at the worst possible moment."
+  type        = number
+  default     = 256
+
+  validation {
+    condition     = var.reserved_descriptors >= 0 && floor(var.reserved_descriptors) == var.reserved_descriptors
+    error_message = "reserved_descriptors must be a non-negative whole number."
+  }
+}
+
+variable "platform_egress_cidrs" {
+  description = <<-EOT
+    Destinations the runner security group may reach on 443 for reasons that
+    have nothing to do with the test: pulling the runner image, shipping logs,
+    writing results.
+
+    This rule cannot simply be omitted. The image is pulled over the task's own
+    network interface, so a security group with no 443 egress produces a task
+    that never starts, and the failure reads as a registry problem rather than
+    as a firewall one.
+
+    It is also the reason an egress allowlist aimed at the target is not an
+    isolation boundary by itself: if this rule reaches the whole internet, as it
+    does by default, it already admits any target on 443. Narrowing this to
+    interface endpoints in a private subnet is what turns the target allowlist
+    into something that actually constrains the fleet.
+  EOT
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+
+  validation {
+    condition     = length(var.platform_egress_cidrs) > 0
+    error_message = "platform_egress_cidrs must contain at least one CIDR; with none, runner tasks cannot pull their image and will never start."
+  }
+
+  validation {
+    condition     = alltrue([for c in var.platform_egress_cidrs : can(cidrnetmask(c))])
+    error_message = "Every entry in platform_egress_cidrs must be a valid IPv4 CIDR."
+  }
+}
+
+variable "container_insights" {
+  description = "Cluster-level container metric collection. Worth its cost on a load fleet for one reason: the most common misreading of a run is attributing the GENERATOR's saturation to the target, and per-task processor and memory figures are what settle that argument."
+  type        = string
+  default     = "enabled"
+
+  validation {
+    condition     = contains(["enabled", "enhanced", "disabled"], var.container_insights)
+    error_message = "container_insights must be enabled, enhanced or disabled."
+  }
+}
+
+variable "run_artifact_bucket_name" {
+  description = "Bucket the runners stream results into, or null. Results are written during the run rather than at the end, because a worker that is reclaimed or that fails at the far end of a long run would otherwise take the whole run's output with it."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.run_artifact_bucket_name == null || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.run_artifact_bucket_name))
+    error_message = "run_artifact_bucket_name must be a valid bucket name, or null."
+  }
+}
+
+variable "metric_namespace" {
+  description = "Metric namespace the runners publish into. The publish permission cannot be scoped to a resource, so it is scoped to this namespace by condition instead, which is the only boundary available on that action."
+  type        = string
+  default     = "LoadTesting/Runners"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._/-]{1,255}$", var.metric_namespace)) && !startswith(var.metric_namespace, "AWS/")
+    error_message = "metric_namespace must be 1-255 characters of letters, digits, dot, underscore, slash or hyphen, and must not begin with AWS/, which is reserved for service metrics."
+  }
+}
+
+variable "runner_cpu_architecture" {
+  description = <<-EOT
+    Processor architecture the runner image is built for.
+
+    This interacts with digest pinning in a way that is easy to get wrong.
+    Pinning by digest is what makes two runs comparable, but a digest can refer
+    either to a manifest LIST covering several architectures or to one
+    architecture's image. A single-architecture digest set here against the
+    other architecture produces a task that never starts, and the failure
+    arrives as an image pull error rather than as an architecture mismatch.
+    Pin the manifest list's digest, or keep the two values in step by hand.
+  EOT
+  type        = string
+  default     = "X86_64"
+
+  validation {
+    condition     = contains(["X86_64", "ARM64"], var.runner_cpu_architecture)
+    error_message = "runner_cpu_architecture must be X86_64 or ARM64."
+  }
+}

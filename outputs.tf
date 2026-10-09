@@ -51,3 +51,70 @@ output "runner_naming" {
     name_budget         = local.name_budget
   }
 }
+
+output "worker_socket_budget" {
+  description = "Where one worker's socket budget comes from and how much headroom it leaves. Published separately from fleet_bounds because the two bounds have different remedies and neither helps with the other."
+  value = {
+    source                       = local.tuple_budget_source
+    port_budget_per_worker       = local.port_budget_per_worker
+    descriptor_budget_per_worker = local.descriptor_budget_per_worker
+    effective_tuple_budget       = local.effective_tuple_budget
+    concurrency_per_worker       = local.derived_worker_count == 0 ? 0 : local.required_concurrency / local.derived_worker_count
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Deployed identifiers
+#
+# These are the values the fan-out launcher is given, so they are published as
+# outputs rather than copied into a command by hand.
+# ---------------------------------------------------------------------------
+
+output "cluster_name" {
+  description = "Cluster the fleet is launched into."
+  value       = aws_ecs_cluster.runners.name
+}
+
+output "cluster_arn" {
+  description = "Cluster ARN, for a launcher invoked from another account's pipeline."
+  value       = aws_ecs_cluster.runners.arn
+}
+
+output "task_definition_arn" {
+  description = "Runner task definition, revision included. The revision is part of a result's provenance: it is what says which generator code produced a number."
+  value       = aws_ecs_task_definition.runner.arn
+}
+
+output "task_definition_revision" {
+  description = "Revision of the runner task definition, pulled out separately so a result can record it without parsing an ARN."
+  value       = aws_ecs_task_definition.runner.revision
+}
+
+output "runner_security_group_id" {
+  description = "Security group the runner tasks are placed in."
+  value       = aws_security_group.runner.id
+}
+
+output "runner_log_group_name" {
+  description = "Log group carrying what the FLEET did, as distinct from what the target did."
+  value       = aws_cloudwatch_log_group.runners.name
+}
+
+output "runner_role_arns" {
+  description = "The two roles, kept separate: the platform's agent assumes one and the scenario assumes the other."
+  value = {
+    execution = aws_iam_role.runner_execution.arn
+    task      = aws_iam_role.runner_task.arn
+  }
+}
+
+output "runner_placement" {
+  description = "Where the fleet is placed and what the subnets had free when this was planned. The address count is a sound proof that a fleet does not fit and weak evidence that one does, since anything else in these subnets may take an address before the launch."
+  value = {
+    subnet_ids              = var.runner_subnet_ids
+    assign_public_ip        = local.assign_public_ip
+    available_addresses     = local.available_addresses
+    subnet_internet_gateway = local.subnet_reaches_internet_gateway
+    subnet_nat_gateway      = local.subnet_reaches_nat_gateway
+  }
+}

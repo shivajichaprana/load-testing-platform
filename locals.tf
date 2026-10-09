@@ -62,8 +62,24 @@ locals {
   task_vcpu         = var.runner_cpu / 1024
   latency_ceiling_s = var.latency_ceiling_ms / 1000
 
-  # Four-tuples one worker may hold at once.
+  # Four-tuples one worker may hold at once, from the port range it has.
   port_budget_per_worker = var.worker_ephemeral_port_count * var.destination_endpoint_count
+
+  # A socket also needs a file descriptor, so the real budget is whichever of
+  # the two runs out first. On this platform the descriptor limit is set well
+  # above the operating system default, high enough that a single-destination
+  # test reaches the port range first - the reverse of a self-managed host.
+  # It becomes binding as soon as the scenario reaches enough destination
+  # addresses, because the four-tuple budget grows with that count and the
+  # descriptor limit does not.
+  descriptor_budget_per_worker = var.runner_nofile_limit - var.reserved_descriptors
+  effective_tuple_budget       = min(local.port_budget_per_worker, local.descriptor_budget_per_worker)
+
+  # Which of the two supplies the socket budget. Reported because the remedies
+  # are different and neither helps with the other: more destination addresses
+  # raise the port budget and nothing else, a higher descriptor limit raises the
+  # descriptor budget and nothing else.
+  tuple_budget_source = local.descriptor_budget_per_worker < local.port_budget_per_worker ? "descriptors" : "ports"
 
   # How long one request occupies a four-tuple.
   #
@@ -78,7 +94,7 @@ locals {
   tuple_occupancy_s = var.connection_reuse ? local.latency_ceiling_s : local.latency_ceiling_s + var.socket_linger_seconds
 
   # Per-worker rate ceilings, in requests per second.
-  worker_rate_ceiling_sockets = local.port_budget_per_worker / local.tuple_occupancy_s
+  worker_rate_ceiling_sockets = local.effective_tuple_budget / local.tuple_occupancy_s
   worker_rate_ceiling_cpu     = var.requests_per_second_per_vcpu * local.task_vcpu
   worker_rate_ceiling         = min(local.worker_rate_ceiling_sockets, local.worker_rate_ceiling_cpu)
 

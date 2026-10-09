@@ -74,6 +74,18 @@ caps at a few hundred requests per second: far below anything its processor
 allocation would suggest, and the failure arrives as address-unavailable errors
 rather than as saturation.
 
+A socket also needs a file descriptor, so the real budget is whichever of the
+two runs out first — and which one that is reverses between environments. This
+platform raises the descriptor limit far above the operating system default,
+high enough that a single-destination test reaches the port range first; on a
+self-managed host the default would bind long before it. The descriptor limit
+takes over as soon as the scenario reaches enough destination addresses, because
+the four-tuple budget grows with that count and the descriptor limit does not.
+At the default port range the crossover is at three destination addresses, and
+past it more addresses buy nothing. Both budgets are published, along with which
+one supplied the answer, because the remedies are different and neither helps
+with the other.
+
 Two further consequences fall out of the same arithmetic:
 
 - The budget scales with the number of distinct destination addresses in
@@ -90,13 +102,22 @@ Two further consequences fall out of the same arithmetic:
 ```
 $ terraform output fleet_plan
 $ terraform output fleet_bounds
+$ terraform output worker_socket_budget
 $ terraform output fleet_findings
 ```
 
-These are evaluable with nothing deployed. A fleet can be sized, inspected and
-rejected before any capacity exists, and the derived worker count is refused
-rather than clamped when it exceeds the configured ceiling — a silently clamped
-fleet offers less load than the run reports.
+The arithmetic itself needs neither state nor credentials, so a fleet can be
+sized and rejected before anything exists:
+
+```
+$ terraform console
+> local.derived_worker_count
+> local.worker_binding_constraint
+```
+
+The derived worker count is refused rather than clamped when it exceeds the
+configured ceiling, because a silently clamped fleet offers less load than the
+run reports.
 
 ## The network path is a test variable
 
@@ -131,6 +152,33 @@ for exploratory runs, where the question is whether the scenario works at all.
 It is not appropriate for a run that establishes or is checked against a
 baseline, and the configuration says so with the share it computed.
 
+## Permissions: the two roles that get collapsed into one
+
+The platform's agent assumes one role to pull the image and open the log
+stream; the scenario inside the container assumes a different one to stream
+results, read its run parameters and publish its own metrics. Nothing the
+scenario runs can reach the first.
+
+The shortcut is to put the result-writing permission on the execution role,
+because that is the role already attached and already working. It is not
+equivalent: an execution role is commonly shared across every task definition
+in an account, so a permission added there is granted to all of them, and the
+blast radius of the grant has nothing to do with this fleet.
+
+Two of the grants here cannot be scoped to a resource at all — registry
+authentication returns a token for the caller's whole registry, and metric
+publication names no resource. The first is left at a wildcard with that reason
+recorded; the second is bounded by a namespace condition, which is the only
+boundary that action has. The result grant is write-only and confined to this
+fleet's prefix: a runner has no reason to read a previous run's output, and a
+generator that could delete it is one bad scenario away from destroying the
+baseline it is being compared against.
+
+The trust policy carries the two confused-deputy condition keys, and the source
+ARN is a wildcard over the account and region. That is not laziness — scoping it
+to a single cluster is not supported, so narrowing it looks like an improvement
+and stops every worker in the fleet from starting.
+
 ## Why a per-run fleet rather than a long-lived one
 
 Workers are launched per run and are expected to exit. A scheduler that
@@ -144,7 +192,18 @@ recorded, and the run still reports success.
 A launch request places a bounded number of tasks, so a fleet larger than that
 is launched in several requests, and a successful response can carry placement
 failures alongside the tasks it did place. Partial placement is the normal case
-and is reconciled rather than trusted.
+and is reconciled rather than trusted — and the reconciliation has teeth, because
+a fleet short of its derived size offers proportionally less load while still
+reporting the target. By default the launcher stops the workers it did place and
+fails, which is only possible because the start instant has not yet passed.
+
+One request places *identical* tasks, which has a consequence worth stating
+plainly: a per-worker index cannot be supplied as a launch override, since every
+task in the request receives the same overrides. The rate share does not need
+one — it is uniform — so the only thing that does is a scenario partitioning its
+data, and such a scenario must read its own identity from the task metadata
+available inside the container. The launcher assigns indices afterwards, from
+the order tasks were placed in, for the run's record rather than for the run.
 
 ## Layout
 
@@ -155,6 +214,10 @@ and is reconciled rather than trusted.
 | `locals.tf` | The sizing arithmetic, one derivation per value |
 | `assertions.tf` | Findings about the objective, and the refusals |
 | `outputs.tf` | The derived fleet and every bound it rests on |
+| `cluster.tf` | Cluster, capacity strategy and the runner log group |
+| `iam.tf` | The execution role and the task role, kept apart |
+| `runners.tf` | Security group, task definition and placement checks |
+| `tools/launch-fleet.py` | Fan-out launcher, reconciliation and the synchronized start |
 | `terraform.tfvars.example` | A worked objective with placeholder account values |
 
 ## Using it
@@ -166,10 +229,29 @@ terraform output fleet_plan                    # size before deploying anything
 terraform plan
 ```
 
+Launching, once the fleet is applied:
+
+```bash
+python3 tools/launch-fleet.py \
+  --cluster "$(terraform output -raw cluster_name)" \
+  --task-definition "$(terraform output -raw task_definition_arn)" \
+  --workers "$(terraform output -json fleet_plan | jq .worker_count)" \
+  --subnet subnet-0123456789abcdef0 \
+  --security-group "$(terraform output -raw runner_security_group_id)" \
+  --target-rate 40000 --assign-public-ip
+```
+
+Nothing is sent without `--execute`: by default the plan is printed and the
+process exits.
+
 The runner image must be pinned by digest. A floating tag lets two runs of the
 same committed scenario execute different generator code, which makes every
 comparison between them unsound while leaving nothing in either result that says
-so — so the configuration refuses a tag rather than warning about one.
+so — so the configuration refuses a tag rather than warning about one. Pinning
+interacts with the processor architecture: a digest may refer to a manifest list
+covering several architectures or to one architecture's image, and a
+single-architecture digest set against the other produces a task that never
+starts, reported as an image pull error rather than as a mismatch.
 
 Every account-specific value in this repository is a placeholder. Nothing here
 is applied against a real account on your behalf.
