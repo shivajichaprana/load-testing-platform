@@ -152,6 +152,47 @@ for exploratory runs, where the question is whether the scenario works at all.
 It is not appropriate for a run that establishes or is checked against a
 baseline, and the configuration says so with the share it computed.
 
+## Scenarios: a check is not an assertion
+
+Scenarios live in `scenarios/`, built from a shared library. A scenario states
+what it asks of the target and what counts as a correct answer; it does not
+state the rate, the ramp, the population, the request timeout or whether
+connections are reused. Those are the fleet's, and a scenario restating one of
+them can disagree with the fleet it is running on without anything in the
+result saying so.
+
+The library exists because of one property of the generator: a check RECORDS a
+result and does not fail the run. The exit status is decided by thresholds. A
+scenario full of checks and no thresholds exits zero with every assertion in it
+failing, and a regression gate reading that exit status reports the release as
+clean. So checks and the thresholds that make them binding are produced from
+one object and cannot be separated.
+
+Three consequences are worth stating here because they decide what a run means.
+
+- A response-time threshold is scoped to the responses the target *meant* to
+  send. An error response is faster than a successful one, so a target that
+  starts failing fast makes an unscoped percentile better: the figure improves
+  while the service degrades.
+- A threshold scoped to something that emitted no samples passes, which makes
+  every mistyped selector an assertion that can never fail. Check names are
+  validated against the selector syntax before use, and a profile naming a
+  phase no stage carries is refused.
+- An error rate over a whole run tolerates a complete outage lasting the run
+  length multiplied by the permitted rate — 36 seconds of a one-hour run at one
+  percent. A longer run is a weaker assertion, and the figure is reported per
+  run rather than left to be discovered.
+
+The population a worker pre-allocates is the arrival rate multiplied by the
+latency ceiling, which is the same equation the fleet size came out of. One
+virtual user holds one connection and one connection is one four-tuple, so the
+population and the socket budget above are the same bound written twice: at
+full socket-bound sizing they are equal by construction, and a population above
+the budget is refused rather than attempted.
+
+See [scenarios/README.md](scenarios/README.md) for the profiles, the finding
+codes and the authoring contract.
+
 ## Permissions: the two roles that get collapsed into one
 
 The platform's agent assumes one role to pull the image and open the log
@@ -217,6 +258,7 @@ the order tasks were placed in, for the run's record rather than for the run.
 | `cluster.tf` | Cluster, capacity strategy and the runner log group |
 | `iam.tf` | The execution role and the task role, kept apart |
 | `runners.tf` | Security group, task definition and placement checks |
+| `scenarios/` | Test definitions and the shared library they are built from |
 | `tools/launch-fleet.py` | Fan-out launcher, reconciliation and the synchronized start |
 | `terraform.tfvars.example` | A worked objective with placeholder account values |
 

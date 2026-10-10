@@ -166,6 +166,19 @@ resource "aws_ecs_task_definition" "runner" {
         },
       ]
 
+      # Two of these are sizing inputs rather than settings, and they are
+      # delivered for one reason: a scenario that states its own value for
+      # either can disagree with the fleet it is running on, and the
+      # disagreement does not surface as an error.
+      #
+      # A scenario willing to wait longer than latency_ceiling_ms holds a
+      # four-tuple for longer than the socket budget was divided by, so the
+      # worker exhausts its sockets at a rate below the one it was sized for -
+      # reported as address-unavailable errors against the target. And the
+      # four-tuple budget is what the population a worker must hold is checked
+      # against: one virtual user holds one connection, so the two are the
+      # same bound written twice and the scenario can verify the parity before
+      # the run rather than discover it during one.
       environment = [
         { name = "RUNNER_METRIC_NAMESPACE", value = var.metric_namespace },
         { name = "RUNNER_PARAMETER_PREFIX", value = "/${var.name_prefix}/run" },
@@ -174,6 +187,8 @@ resource "aws_ecs_task_definition" "runner" {
         { name = "RUNNER_LOAD_MODEL", value = var.load_model },
         { name = "RUNNER_CONNECTION_REUSE", value = tostring(var.connection_reuse) },
         { name = "RUNNER_STOP_TIMEOUT_SECONDS", value = tostring(var.runner_stop_timeout_seconds) },
+        { name = "RUNNER_LATENCY_CEILING_MS", value = tostring(var.latency_ceiling_ms) },
+        { name = "RUNNER_TUPLE_BUDGET", value = tostring(local.effective_tuple_budget) },
       ]
 
       # No health check. A load generator has no steady state to probe, and a

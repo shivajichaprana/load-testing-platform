@@ -28,6 +28,11 @@ baselines/local/
 summary-*.json
 fleet-plan-*.json
 
+# Node. The scenario library is plain modules with no build step; anything
+# installed locally to lint or exercise them is not source.
+node_modules/
+npm-debug.log*
+
 # Python
 __pycache__/
 *.py[cod]
