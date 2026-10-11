@@ -118,3 +118,88 @@ output "runner_placement" {
     subnet_nat_gateway      = local.subnet_reaches_nat_gateway
   }
 }
+
+# ---------------------------------------------------------------------------
+# Results pipeline
+#
+# Published for the same reason the sizing figures are: a result is only
+# comparable against another result when the two agree about how they were
+# aggregated, and that agreement is checkable only if the terms are written
+# down somewhere a reader can get at.
+# ---------------------------------------------------------------------------
+
+output "results_storage" {
+  description = "Where results land, and the three retention lengths that follow from one figure."
+  value = {
+    bucket            = local.results_bucket_name
+    managed_here      = local.manage_results_bucket
+    samples_prefix    = local.samples_prefix
+    index_prefix      = local.index_prefix
+    query_results     = local.query_results_prefix
+    sample_key        = local.sample_key_template
+    index_key         = local.index_key_template
+    queryable_days    = local.queryable_days
+    expiry_days       = var.results_retention_days
+    stored_total_days = local.storage_days
+  }
+}
+
+output "result_catalog" {
+  description = "The catalogue a query reads. run_samples is partitioned by date and by run identifier, and the run identifier is an injected projection: a query against it with no run filter FAILS rather than returning everything, which is why run_index exists and is partitioned by date alone."
+  value = {
+    database      = aws_glue_catalog_database.results.name
+    samples_table = aws_glue_catalog_table.run_samples.name
+    index_table   = aws_glue_catalog_table.run_index.name
+    partitions = {
+      (local.samples_table) = local.sample_partition_order
+      (local.index_table)   = local.index_partition_order
+    }
+    workgroup      = aws_athena_workgroup.results.name
+    scan_cutoff    = var.query_scan_cutoff_bytes
+    named_queries  = sort([for name, q in aws_athena_named_query.catalog : q.name])
+    unread_metrics = local.unqueried_metric_sources
+  }
+}
+
+output "result_contract" {
+  description = "What a worker is told about writing results: the key template, the flush interval, the shared bucket ladder and how metrics are published. Published as an output as well as a parameter because a parameter's value is sensitive in plan output whatever its type, and a change to the result schema is the change that most needs reading in a plan."
+  value       = local.result_contract
+}
+
+output "result_contract_parameter" {
+  description = "Parameter the workers read the contract from. The version is the second half of a result's provenance: the task definition's revision records which generator produced a number and this records how the number was aggregated. A worker records the version it actually read, because nothing stops the parameter changing between a launch and that read."
+  value = {
+    name    = aws_ssm_parameter.result_contract.name
+    version = aws_ssm_parameter.result_contract.version
+    bytes   = length(local.result_contract_json)
+    budget  = local.contract_size_budget
+  }
+}
+
+output "result_metrics" {
+  description = "The metric catalogue, with the generator metric each one is published from. One definition feeds the contract the workers read, the dashboards' widgets and the guards over the committed SQL - because a dashboard naming a metric nothing publishes renders blank on a page that applied cleanly."
+  value = {
+    namespace  = var.metric_namespace
+    publish    = var.metric_publish_mode
+    resolution = var.metric_resolution_seconds
+    dimensions = local.stable_dimensions
+    phases     = local.phase_names
+    latency    = local.latency_statistics
+    metrics    = local.result_metrics
+  }
+}
+
+output "result_findings" {
+  description = "Findings about the pipeline: everything that changes what a stored result means or what it may be compared against."
+  value       = local.result_findings
+}
+
+output "dashboards" {
+  description = "The two dashboards, kept apart on purpose: one shows what the target did and one shows what the generator did, and the commonest misreading of a load test is attributing the second to the first."
+  value = {
+    enabled = local.dashboards_enabled
+    period  = local.dashboard_period
+    run     = local.dashboards_enabled ? aws_cloudwatch_dashboard.run[0].dashboard_name : null
+    fleet   = local.dashboards_enabled ? aws_cloudwatch_dashboard.fleet[0].dashboard_name : null
+  }
+}

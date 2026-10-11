@@ -13,7 +13,7 @@ locals {
       code     = "L101"
       when     = local.derived_worker_count > 0 && local.worker_binding_constraint == "sockets"
       severity = "note"
-      message  = format(
+      message = format(
         "Each worker is bounded by its four-tuple budget at %.0f requests per second, below the %.0f the vCPU allocation would support. Giving a worker more vCPU will not shrink this fleet; reusing connections, or reaching more destination endpoints, will.",
         local.worker_rate_ceiling_sockets,
         local.worker_rate_ceiling_cpu,
@@ -23,7 +23,7 @@ locals {
       code     = "L102"
       when     = local.derived_worker_count > 0 && !var.connection_reuse
       severity = "warning"
-      message  = format(
+      message = format(
         "Connection reuse is off, so each request holds a four-tuple for the response time plus the %ds lingering interval, capping a worker at %.0f requests per second. Turning reuse on raises that ceiling to %.0f for the same task shape.",
         var.socket_linger_seconds,
         local.worker_rate_ceiling_sockets,
@@ -40,7 +40,7 @@ locals {
       code     = "L104"
       when     = local.interruptible_share > 0
       severity = "warning"
-      message  = format(
+      message = format(
         "About %.0f%% of the fleet is placed on interruptible capacity. A reclaimed worker withdraws its share of the offered load mid-run, which is indistinguishable in the target's metrics from the target degrading. Results from this configuration should not be compared against a baseline.",
         local.interruptible_share * 100,
       )
@@ -55,7 +55,7 @@ locals {
       code     = "L106"
       when     = var.runner_egress_mode == "public_ip" && local.derived_worker_count > 1
       severity = "note"
-      message  = format(
+      message = format(
         "The target will see up to %d distinct source addresses. A per-source-address rate limit on the target path therefore admits roughly that multiple of what it would admit from a single client, which is a property of this fleet's topology rather than of the service under test.",
         local.derived_worker_count,
       )
@@ -64,7 +64,7 @@ locals {
       code     = "L107"
       when     = local.run_task_batches > 1
       severity = "note"
-      message  = format(
+      message = format(
         "A launch request places at most %d tasks, so this fleet is launched in %d requests. Partial placement is the normal case: a successful response can carry placement failures alongside the tasks it did place, and the launcher must reconcile the count rather than trust it.",
         local.run_task_max_count,
         local.run_task_batches,
@@ -80,7 +80,7 @@ locals {
       code     = "L109"
       when     = local.derived_worker_count > 0 && local.fleet_vcpu > var.account_fargate_vcpu_quota * 0.75
       severity = "warning"
-      message  = format(
+      message = format(
         "The fleet claims %.2f of the %.0f vCPU quota stated for this account, leaving little room for anything else running in it. A fleet that exceeds the quota does not refuse to launch; it places some workers and reports placement failures for the rest, and the run then offers less load than it claims to.",
         local.fleet_vcpu,
         var.account_fargate_vcpu_quota,

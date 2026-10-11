@@ -182,8 +182,15 @@ resource "aws_ecs_task_definition" "runner" {
       environment = [
         { name = "RUNNER_METRIC_NAMESPACE", value = var.metric_namespace },
         { name = "RUNNER_PARAMETER_PREFIX", value = "/${var.name_prefix}/run" },
-        { name = "RUNNER_ARTIFACT_BUCKET", value = coalesce(var.run_artifact_bucket_name, "") },
-        { name = "RUNNER_ARTIFACT_PREFIX", value = "${var.name_prefix}/runs" },
+        # Both read from the results pipeline's own layout rather than
+        # assembled here. The emitter is given the whole key template through
+        # the result contract; these two are the bucket and the root it is
+        # relative to, and a root written in two places is a root that can
+        # stop matching the catalogue without anything failing - objects land,
+        # the table reports no rows, and the run reads as one that offered no
+        # load.
+        { name = "RUNNER_ARTIFACT_BUCKET", value = local.results_bucket_name },
+        { name = "RUNNER_ARTIFACT_PREFIX", value = local.results_root },
         { name = "RUNNER_LOAD_MODEL", value = var.load_model },
         { name = "RUNNER_CONNECTION_REUSE", value = tostring(var.connection_reuse) },
         { name = "RUNNER_STOP_TIMEOUT_SECONDS", value = tostring(var.runner_stop_timeout_seconds) },

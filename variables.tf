@@ -605,3 +605,168 @@ variable "runner_cpu_architecture" {
     error_message = "runner_cpu_architecture must be X86_64 or ARM64."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Results pipeline
+# ---------------------------------------------------------------------------
+
+variable "results_retention_days" {
+  description = "How long a run's measurements are kept. Three lengths follow from this one figure and all three are published: the queryable window stops a calendar date earlier so no visible partition is part-way through being deleted, and a versioned object is still stored for the noncurrent window after it expires."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.results_retention_days >= 2 && var.results_retention_days == floor(var.results_retention_days)
+    error_message = "results_retention_days must be a whole number of at least 2; the queryable window is one date shorter than it."
+  }
+}
+
+variable "results_noncurrent_version_retention_days" {
+  description = "How long a superseded object version is kept. Versioning exists to make one failure visible: the result key scheme is unique per worker and per flush, and if that is ever broken the second write succeeds silently and the first worker's measurements vanish. This window is how long the evidence survives."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.results_noncurrent_version_retention_days >= 1
+    error_message = "results_noncurrent_version_retention_days must be at least 1."
+  }
+}
+
+variable "query_result_retention_days" {
+  description = "How long query output is kept. Every query leaves a result object and a metadata object behind and nothing in the query engine removes them, so without this the cost of a year of exploration is paid in storage rather than in scans."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.query_result_retention_days >= 1
+    error_message = "query_result_retention_days must be at least 1."
+  }
+}
+
+variable "results_bucket_force_destroy" {
+  description = "Whether destroying the results bucket may delete its contents. Off by default: the contents are the baselines every later comparison is made against, and a destroy that silently empties them is a quieter loss than a destroy that fails."
+  type        = bool
+  default     = false
+}
+
+variable "catalog_database_name" {
+  description = "Catalogue database for the run history, or null to derive one from name_prefix. A database name may not contain a hyphen, so a derived name replaces them."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.catalog_database_name == null || can(regex("^[a-z][a-z0-9_]{0,254}$", var.catalog_database_name))
+    error_message = "catalog_database_name must be lowercase letters, digits and underscores, starting with a letter, or null."
+  }
+}
+
+variable "metric_publish_mode" {
+  description = "How workers publish their latency distribution. values sends the bucket ladder, which is what makes a percentile retrievable; statistic_set sends a count, sum, minimum and maximum, from which a percentile is retrievable only in the degenerate case where every sample in the set is identical."
+  type        = string
+  default     = "values"
+
+  validation {
+    condition     = contains(["values", "statistic_set"], var.metric_publish_mode)
+    error_message = "metric_publish_mode must be values or statistic_set."
+  }
+}
+
+variable "metric_resolution_seconds" {
+  description = "Publication resolution for the workers' own metrics. A dashboard widget's period cannot go below 60, and sub-minute data is retained for hours rather than weeks, so a finer resolution is worth paying for only if something other than a dashboard reads it inside that window."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = contains([1, 60], var.metric_resolution_seconds)
+    error_message = "metric_resolution_seconds must be 1 (high resolution) or 60 (standard)."
+  }
+}
+
+variable "latency_bucket_boundaries_ms" {
+  description = "Inclusive upper bounds of the shared latency ladder, in milliseconds. One ladder for the whole fleet, because a percentile cannot be combined across workers and merging distributions can only be done over common boundaries. Two runs aggregated over different ladders are not comparable at any percentile, which is why the ladder travels with the result contract's version."
+  type        = list(number)
+  default = [
+    1, 2, 3, 5, 8, 10, 15, 20, 25, 30, 40, 50, 65, 80,
+    100, 125, 150, 200, 250, 300, 400, 500, 650, 800,
+    1000, 1250, 1500, 2000, 2500, 3000, 4000, 5000, 6500, 8000,
+    10000, 15000, 20000, 30000, 45000, 60000,
+  ]
+
+  validation {
+    condition     = length(var.latency_bucket_boundaries_ms) >= 2
+    error_message = "latency_bucket_boundaries_ms needs at least two boundaries to bound anything."
+  }
+
+  validation {
+    condition     = alltrue([for b in var.latency_bucket_boundaries_ms : b > 0])
+    error_message = "every boundary in latency_bucket_boundaries_ms must be greater than zero."
+  }
+
+  validation {
+    # Strictly increasing. The merge takes a cumulative sum in boundary order,
+    # so an out-of-order or repeated boundary does not produce an error - it
+    # produces a monotonic-looking curve that is wrong, and a percentile read
+    # off it lands in the wrong bucket.
+    condition = alltrue([
+      for i, b in var.latency_bucket_boundaries_ms : i == 0 || b > var.latency_bucket_boundaries_ms[i - 1]
+    ])
+    error_message = "latency_bucket_boundaries_ms must be strictly increasing with no repeats; the cumulative sum that locates a percentile is taken in boundary order."
+  }
+
+  validation {
+    # One publish request carries at most 150 values for a metric. Past that, a
+    # single window's distribution arrives as more than one data point.
+    condition     = length(var.latency_bucket_boundaries_ms) <= 150
+    error_message = "latency_bucket_boundaries_ms has more than 150 boundaries, which is the most one publish request carries for a metric."
+  }
+}
+
+variable "result_flush_seconds" {
+  description = "How often a worker writes what it has measured. Results are streamed during a run rather than written at the end, so this is the window a reclaimed or failed worker loses - and also the divisor for the object count a query has to open. Both sides move together."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.result_flush_seconds >= 5 && var.result_flush_seconds <= 300 && var.result_flush_seconds == floor(var.result_flush_seconds)
+    error_message = "result_flush_seconds must be a whole number between 5 and 300."
+  }
+}
+
+variable "query_scan_cutoff_bytes" {
+  description = "Bytes a single query may scan before it is cancelled. The history grows for as long as the retention allows and this is the only thing between an exploratory query and reading all of it, so it is worth setting to the size of a few runs rather than to the size of the history."
+  type        = number
+  default     = 10737418240
+
+  validation {
+    condition     = var.query_scan_cutoff_bytes >= 10485760
+    error_message = "query_scan_cutoff_bytes must be at least 10485760; smaller values are rejected."
+  }
+}
+
+variable "create_dashboards" {
+  description = "Whether to create the run and fleet dashboards. Both are built from the same metric catalogue the result contract and the publish permission are built from, so turning them off removes two pages and changes nothing a worker does."
+  type        = bool
+  default     = true
+}
+
+variable "dashboard_period_seconds" {
+  description = "Period for every widget on both dashboards. Must be a multiple of 60 with 60 the minimum, which is the floor a widget allows: there is no sub-minute view, so a short run is a handful of points and is read from the query catalogue instead."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = var.dashboard_period_seconds >= 60 && var.dashboard_period_seconds % 60 == 0
+    error_message = "dashboard_period_seconds must be a multiple of 60, with 60 as the minimum."
+  }
+}
+
+variable "dashboard_default_range" {
+  description = "Time range both dashboards open on. A relative range beginning -PT for minutes or hours and -P for days, weeks or months."
+  type        = string
+  default     = "-PT1H"
+
+  validation {
+    condition     = can(regex("^-P(T[0-9]+[MH]|[0-9]+[DWM])$", var.dashboard_default_range))
+    error_message = "dashboard_default_range must be a relative range such as -PT30M, -PT3H, -P7D or -P1M."
+  }
+}

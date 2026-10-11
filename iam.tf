@@ -149,23 +149,25 @@ data "aws_iam_policy_document" "runner_task" {
     ]
   }
 
-  # Write-only, and only beneath this fleet's prefix. A runner has no reason to
-  # read a previous run's results, and a generator that can delete them is one
-  # bad scenario away from destroying the baseline it is being compared to.
-  dynamic "statement" {
-    for_each = var.run_artifact_bucket_name == null ? [] : [var.run_artifact_bucket_name]
-
-    content {
-      sid    = "StreamRunResults"
-      effect = "Allow"
-      actions = [
-        "s3:AbortMultipartUpload",
-        "s3:PutObject",
-      ]
-      resources = [
-        "arn:${data.aws_partition.current.partition}:s3:::${statement.value}/${var.name_prefix}/runs/*",
-      ]
-    }
+  # Write-only, and only beneath this fleet's run prefix. A runner has no
+  # reason to read a previous run's results, and a generator that can delete
+  # them is one bad scenario away from destroying the baseline it is being
+  # compared to.
+  #
+  # The prefix is the results pipeline's own, which is what keeps this grant
+  # and the catalogue's table locations the same string. It also keeps query
+  # output OUT of reach: that lands beside this prefix rather than inside it,
+  # so a worker cannot overwrite the answer to a question about itself.
+  statement {
+    sid    = "StreamRunResults"
+    effect = "Allow"
+    actions = [
+      "s3:AbortMultipartUpload",
+      "s3:PutObject",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:s3:::${local.results_bucket_name}/${local.results_root}/*",
+    ]
   }
 }
 

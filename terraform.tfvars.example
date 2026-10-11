@@ -68,3 +68,45 @@ tags = {
   CostCenter  = "<your-cost-center>"
   Environment = "performance"
 }
+
+# ---------------------------------------------------------------------------
+# Results pipeline
+#
+# Leave run_artifact_bucket_name unset to have the bucket created here with the
+# encryption, versioning and lifecycle rules the streaming design needs. Set it
+# only to adopt a bucket you already own - an adopted bucket is not configured
+# by this module, so nothing here will abort the incomplete multipart uploads a
+# reclaimed worker leaves behind or expire the query output the workgroup
+# writes into it.
+# ---------------------------------------------------------------------------
+
+# results_retention_days = 30
+# query_result_retention_days = 7
+
+# Flush interval. This is both the window a reclaimed worker loses and the
+# divisor for how many objects a query has to open, so the two move together.
+# It must divide the dashboard period, because the worker count on the page is
+# the flush count divided by the flushes a period contains.
+# result_flush_seconds = 30
+
+# The shared bucket ladder. One ladder for the whole fleet: a percentile cannot
+# be combined across workers, and distributions can only be merged over common
+# boundaries. It must carry a boundary AT latency_ceiling_ms, which is refused
+# rather than warned about - that is the figure the run is judged against, and
+# the one place a bucket's width would decide the verdict.
+# latency_bucket_boundaries_ms = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000]
+
+# values, so percentiles are retrievable. From a statistic set a percentile is
+# answerable only where every sample in the set is identical, which makes a
+# percentile widget permanently empty rather than approximately right.
+# metric_publish_mode = "values"
+
+# A widget period cannot go below 60, so sub-minute publication is not visible
+# on either dashboard and is retained for hours rather than weeks.
+# metric_resolution_seconds = 60
+# dashboard_period_seconds  = 60
+# dashboard_default_range   = "-PT1H"
+
+# The only thing between an exploratory query and reading the whole history.
+# Worth setting to the size of a few runs rather than the size of the history.
+# query_scan_cutoff_bytes = 10737418240
