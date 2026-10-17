@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# Regression policy: what counts as a result worse than the baseline.
+#
+# Every gate here is an allowance ON TOP OF the baseline's own figure, not an
+# absolute limit. An absolute limit is a different instrument: it says what the
+# service must achieve, it belongs with the objectives, and it does not change
+# when the baseline is refreshed. A regression gate says only that this change
+# did not make things worse than the last change did, which is the question a
+# pipeline can actually answer from two runs.
+#
+# Allowances are not tuning knobs to be minimised. The comparison reads
+# percentiles off a bucket ladder, so it can only resolve a difference larger
+# than a bucket; an allowance narrower than the bucket straddling the ceiling
+# cannot produce a verdict at all and is reported as unresolved rather than as
+# a pass. Tightening a number here past that point does not make the gate
+# stricter, it makes it silent - so each allowance below is at least as wide as
+# the ladder spacing in the region the figure lives in, and the way to tighten
+# one is to add a ladder boundary first.
+#
+# `select` matches a measurement document's phase and series. A selector that
+# matches nothing is a FAILURE, never a pass: a renamed phase would otherwise
+# switch its own gate off and report green.
+# ---------------------------------------------------------------------------
+
+schema_version: 1
+
+defaults:
+  # Conditions under which no verdict is taken at all. These produce a void
+  # comparison rather than a failure, because the candidate said nothing about
+  # the change - it measured something else.
+  require_comparable: true
+  require_same_ladder: true
+  require_same_scenario: true
+  offered_rate_tolerance_pct: 2.0
+
+  # A figure computed from too little data moves by a bucket between identical
+  # runs. Below these floors the gate reports unresolved instead of quoting a
+  # verdict it cannot support.
+  min_latency_observations: 1000
+  min_windows: 3
+
+  # What to do when the candidate's interval straddles the allowed ceiling, so
+  # that neither verdict follows from the data: fail, pass, or report. `fail`
+  # is the default because the alternative silently admits every change too
+  # small for the ladder to see, which is most of them.
+  on_unresolved: fail
+  on_unmatched_selector: fail
+
+gates:
+  - id: read-steady
+    about: >-
+      Steady-state read path. The gate the release is actually judged on: the
+      ramp phases exist to reach this state, and their latency is a property of
+      the ramp shape rather than of the change under test.
+    select:
+      scenario: http-read
+      phase: steady
+    rules:
+      percentile:
+        # Allowances widen with the percentile, because the ladder's spacing
+        # does: a p50 in the tens of milliseconds sits among 5ms boundaries
+        # while a p99 in the hundreds sits among 50ms ones, and a p99 allowance
+        # of 10ms could never be resolved.
+        p50:
+          allow_abs_ms: 5
+          allow_rel_pct: 10
+        p95:
+          allow_abs_ms: 50
+          allow_rel_pct: 15
+        p99:
+          allow_abs_ms: 100
+          allow_rel_pct: 20
+      error_rate_pct:
+        # Absolute percentage points, not relative. A relative allowance on an
+        # error rate is meaningless at the bottom of the range, where the
+        # baseline is zero and every multiple of it is also zero.
+        allow_abs: 0.1
+      achieved_rate_per_s:
+        # The one figure where lower is worse. A change that holds its latency
+        # by serving less is a regression, and a gate reading only latency
+        # passes it.
+        direction: not_below
+        allow_rel_pct: 3
+      dropped_iterations:
+        # Not an allowance against the baseline but a hard count, and the only
+        # one here. A run that dropped iterations did not offer the rate it
+        # reports, so its latency figures describe a smaller run - this gate
+        # exists to stop that being read as an improvement.
+        max_abs: 0
+
+  - id: write-steady
+    about: >-
+      Steady-state write path. Wider allowances than the read path and
+      deliberately so: the write path's own variance is larger, so a gate
+      copied from the read path would fail on it regularly and be ignored.
+    select:
+      scenario: http-write
+      phase: steady
+    rules:
+      percentile:
+        p50:
+          allow_abs_ms: 10
+          allow_rel_pct: 15
+        p95:
+          allow_abs_ms: 100
+          allow_rel_pct: 20
+        p99:
+          allow_abs_ms: 250
+          allow_rel_pct: 25
+      error_rate_pct:
+        allow_abs: 0.2
+      achieved_rate_per_s:
+        direction: not_below
+        allow_rel_pct: 5
+      dropped_iterations:
+        max_abs: 0
+
+  - id: journey-steady
+    about: >-
+      The multi-request journey. Its percentiles are over a sequence, so they
+      carry every step's variance and the allowances are the widest here. Error
+      rate is the figure worth watching on this scenario rather than latency:
+      a broken step shows up as a failure long before it shows up as a
+      slowdown.
+    select:
+      scenario: user-journey
+      phase: steady
+    rules:
+      percentile:
+        p95:
+          allow_abs_ms: 250
+          allow_rel_pct: 25
+      error_rate_pct:
+        allow_abs: 0.1
+      dropped_iterations:
+        max_abs: 0
