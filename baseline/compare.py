@@ -274,6 +274,15 @@ def allowance(rule: dict[str, Any], baseline_value: float, *, absolute_key: str)
     the alternative is a gate that is accidentally unresolvable at one end of
     the range.
     """
+    # Checked before anything is combined, so the vocabulary is validated
+    # wherever it is written. A rule with no allowance permits nothing whatever
+    # `combine` says, but a policy carrying a misspelled key is a policy that
+    # was not read the way it was written, and the next edit to that rule would
+    # inherit the typo silently.
+    combine = str(rule.get("combine", "wider"))
+    if combine not in ("wider", "narrower"):
+        raise CompareError(f"combine must be 'wider' or 'narrower'; got {combine!r}.")
+
     absolute = rule.get(absolute_key)
     relative = rule.get("allow_rel_pct")
     candidates: list[float] = []
@@ -283,9 +292,6 @@ def allowance(rule: dict[str, Any], baseline_value: float, *, absolute_key: str)
         candidates.append(abs(baseline_value) * float(relative) / 100.0)
     if not candidates:
         return 0.0
-    combine = str(rule.get("combine", "wider"))
-    if combine not in ("wider", "narrower"):
-        raise CompareError(f"combine must be 'wider' or 'narrower'; got {combine!r}.")
     return max(candidates) if combine == "wider" else min(candidates)
 
 

@@ -107,7 +107,16 @@ function readJsonPath(response, path) {
   }
   let cursor = value;
   for (const segment of path.split('.')) {
-    if (cursor === null || typeof cursor !== 'object' || !(segment in cursor)) {
+    // Own properties only. The `in` operator walks the prototype chain, so a
+    // path naming `constructor`, `toString` or `valueOf` would resolve against
+    // every object and report a field as PRESENT that the response never
+    // carried - a passing check for a thing that is not there, which is the
+    // one failure shape this module is built to refuse.
+    if (
+      cursor === null ||
+      typeof cursor !== 'object' ||
+      !Object.prototype.hasOwnProperty.call(cursor, segment)
+    ) {
       return { ok: false, value: undefined };
     }
     cursor = cursor[segment];

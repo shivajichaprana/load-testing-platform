@@ -1,0 +1,14 @@
+{
+  "name": "load-testing-platform-scenarios",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scenario library for the load-generator fleet. Plain modules, no build step, no runtime dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "test": "node --import ./tests/scenarios/support/register.mjs --test tests/scenarios/"
+  }
+}
