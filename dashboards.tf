@@ -419,7 +419,14 @@ locals {
         }
       },
     ],
-    local.fleet_metrics_available ? [
+    # A comprehension rather than a conditional, and not as a matter of taste.
+    # A conditional's two result expressions must unify to one type, and these
+    # widgets do not: the second carries an `annotations` block the first has
+    # no attribute for, so the pair is a tuple that cannot be read as a list of
+    # one object type, and the empty alternative cannot be read as that tuple
+    # either. The comprehension states the same intent and leaves the group one
+    # type regardless of the flag.
+    [for widget in [
       {
         type   = "metric"
         x      = 0
@@ -482,7 +489,7 @@ locals {
           ]
         }
       },
-    ] : [],
+    ] : widget if local.fleet_metrics_available],
     [
       {
         type   = "log"
