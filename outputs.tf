@@ -19,6 +19,12 @@ output "fleet_plan" {
     launch_requests     = local.run_task_batches
     interruptible_share = local.interruptible_share
     egress_mode         = var.runner_egress_mode
+    # Published because nothing in the configuration consumes it: the
+    # synchronized start instant is set by the launcher, from this value, and a
+    # launcher given a shorter delay than the slowest worker's start time has
+    # part of the fleet miss the beginning of the run. Leaving the figure
+    # declared but unpublished is how the two drift apart.
+    start_delay_seconds = var.start_delay_seconds
   }
 }
 
