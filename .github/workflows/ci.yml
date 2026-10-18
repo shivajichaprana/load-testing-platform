@@ -1,0 +1,354 @@
+# What a change to this repository has to survive.
+#
+# The jobs are split by what they would TELL you rather than by which tool runs
+# them. A scenario that no longer builds its options, a committed scenario that
+# emits untagged requests, arithmetic in the baseline tools that changed, a
+# regression policy that no longer refers to anything that exists, and
+# Terraform that no longer parses are five different repairs - and one job
+# running all five reports only the first.
+#
+# Actions are pinned to a commit, not to a tag. A tag is a moving reference the
+# publisher can repoint, so a pinned tag is a supply chain that changes without
+# a commit here; the readable version is in the comment beside each one.
+name: load-testing-platform-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push supersedes the first: the only run worth finishing is the one
+# that describes the current tip.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.x"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The scenario library. Run on two runtimes because the modules are executed
+  # by the generator's own runtime in production and by a plain one here, and
+  # the suite is the only thing standing between those two.
+  # ---------------------------------------------------------------------------
+  scenario-library:
+    name: scenario library
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what the resolver hook the suite installs requires; the
+        # ceiling is the current release line.
+        node-version: ["20.x", "22.x"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+      # No install step, deliberately: the library has no runtime dependencies
+      # and the suite has none either. An install step here would be the first
+      # thing to break the claim that a scenario file is a plain module.
+      - name: Confirm nothing was installed to make this pass
+        run: |
+          set -euo pipefail
+          test ! -d node_modules
+          node --version
+      # The glob is expanded by the shell rather than passed through quoted:
+      # the runtime's own expansion of a test pattern is newer than the floor
+      # this matrix tests, so a quoted pattern reaches the older runtime as a
+      # path that does not exist.
+      - name: Run the suite
+        run: >-
+          node --import ./tests/scenarios/support/register.mjs
+          --test tests/scenarios/*.test.mjs
+
+  # ---------------------------------------------------------------------------
+  # Every committed scenario, built and executed once against stand-ins.
+  #
+  # Separated from the suite above because it answers a different question. The
+  # library can be correct and a scenario can still emit requests with no phase
+  # tag - in which case every phase-scoped threshold selects nothing, every one
+  # of them passes, and the run reports a clean result having asserted nothing.
+  # ---------------------------------------------------------------------------
+  scenario-lint:
+    name: lint committed scenarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Every scenario builds its options and tags what it measures
+        run: >-
+          node --import ./tests/scenarios/support/register.mjs
+          --test tests/scenarios/entrypoints.test.mjs
+      - name: No scenario reaches for a module the generator does not provide
+        run: |
+          set -euo pipefail
+          # The resolver hook substitutes four built-in module names. An import
+          # of anything else would resolve in a test runtime, where a package
+          # manager exists, and fail inside the generator, where one does not -
+          # so it would pass every gate here and break on the fleet.
+          specifiers=$(grep -rhoP "from '[^']+'" --include='*.js' scenarios/ | sort -u)
+          foreign=$(echo "$specifiers" | grep -vP "^from '(k6(/[a-z]+)?|\.{1,2}/[^']+)'$" || true)
+          if [ -n "$foreign" ]; then
+            echo "a scenario imports a module the generator cannot resolve:" >&2
+            echo "$foreign" >&2
+            exit 1
+          fi
+          echo "$specifiers" | wc -l | xargs printf '%s import specifier(s), all resolvable\n'
+
+  # ---------------------------------------------------------------------------
+  # The capture and comparison tools. Two interpreters for the same reason as
+  # the two runtimes above: the floor is what the type syntax in these modules
+  # implies, the ceiling is what a contributor is likely to have installed.
+  # ---------------------------------------------------------------------------
+  baseline-tools:
+    name: baseline tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install check dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Run the suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >-
+          python -m unittest discover
+          --start-directory tests/baseline --top-level-directory tests/baseline --verbose
+
+  # ---------------------------------------------------------------------------
+  # The regression gate itself, through the command line a pipeline calls.
+  #
+  # The policy, the latency ladder, the percentile query and the scenario names
+  # live in four files that can each be edited alone. When they drift apart
+  # nothing fails: a selector stops matching, or an allowance becomes too
+  # narrow for the ladder to resolve. Both are failures here, and this job is
+  # where that is established.
+  # ---------------------------------------------------------------------------
+  regression-gate:
+    name: audit regression policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install check dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Audit the shipped policy against the rest of the repository
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >-
+          python -m unittest discover
+          --start-directory tests/baseline --top-level-directory tests/baseline
+          --pattern test_policy.py --verbose
+      - name: The gate rejects a regression and admits an unchanged run
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "tests/baseline")
+          import _support as fixtures
+
+          work = pathlib.Path("gate-check")
+          work.mkdir(exist_ok=True)
+
+          def write(name, document):
+              path = work / name
+              path.write_text(json.dumps(document), encoding="utf-8")
+              return str(path)
+
+          baseline = write("baseline.json", fixtures.measurement())
+          clean = write("clean.json", fixtures.measurement(role="candidate"))
+          slower = write(
+              "slower.json",
+              fixtures.measurement(
+                  role="candidate",
+                  percentiles={"p50": 50.0, "p95": 650.0, "p99": 800.0},
+              ),
+          )
+
+          def gate(candidate):
+              finished = subprocess.run(
+                  [
+                      sys.executable,
+                      "baseline/compare.py",
+                      "--baseline",
+                      baseline,
+                      "--candidate",
+                      candidate,
+                      "--thresholds",
+                      "baseline/thresholds.yaml",
+                      "--format",
+                      "json",
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              report = json.loads(finished.stdout)
+              return finished.returncode, report["outcome"]
+
+          # Exit codes are the whole interface a pipeline step reads, so they
+          # are asserted rather than the report text.
+          assert gate(clean) == (0, "pass"), gate(clean)
+          assert gate(slower) == (1, "regressed"), gate(slower)
+          print("the gate admits an unchanged run and rejects a slower one")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Lint. Both Python tools and the YAML linter read a committed configuration
+  # rather than taking their limits from this file, so the gate and a local run
+  # cannot disagree.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install check dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: pyflakes
+        run: python -m pyflakes $(git ls-files '*.py')
+      - name: flake8
+        run: python -m flake8 $(git ls-files '*.py')
+      - name: yamllint
+        run: python -m yamllint --strict $(git ls-files '*.yaml' '*.yml')
+
+  # ---------------------------------------------------------------------------
+  # Terraform. No credentials and no backend: `validate` needs the providers
+  # but not an account, so `init -backend=false` is the whole setup and nothing
+  # here can reach a real deployment.
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: terraform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+      - name: terraform init
+        run: terraform init -backend=false -input=false
+      # Diagnostics are emitted as annotations as well as printed. A validation
+      # failure names a file and a line, and the log is the one place that
+      # pairing is hardest to read: annotations put it against the source.
+      - name: terraform validate
+        run: |
+          set -uo pipefail
+          if terraform validate -no-color -json > validate.json; then
+            echo "the configuration validates"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json
+
+          with open("validate.json", encoding="utf-8") as handle:
+              report = json.load(handle)
+
+          for diagnostic in report.get("diagnostics", []):
+              where = diagnostic.get("range") or {}
+              start = where.get("start") or {}
+              message = "{}: {}".format(
+                  diagnostic.get("summary", "diagnostic"),
+                  (diagnostic.get("detail") or "").strip(),
+              )
+              # A newline in a workflow command truncates the annotation, so
+              # the escape the runner understands is used instead.
+              message = message.replace("\r", " ").replace("\n", "%0A")
+              level = "error" if diagnostic.get("severity") == "error" else "warning"
+              # The location is a space-separated property list, not a
+              # comma-continuation of the command name: written with a comma
+              # the runner still raises the annotation but attaches it to this
+              # workflow file rather than to the source it is about.
+              location = ""
+              if where.get("filename"):
+                  location = " file={},line={}".format(
+                      where["filename"], start.get("line", 1)
+                  )
+              print("::{}{}::{}".format(level, location, message))
+          PY
+          exit 1
+      - uses: terraform-linters/setup-tflint@ae78205cfffec9e8d93fd2b3115c7e9d3166d4b6 # v5.1.0
+        with:
+          tflint_version: v0.54.0
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --format compact
+
+  # ---------------------------------------------------------------------------
+  # One required check. Without it a branch protection rule has to name every
+  # job above, and a job added here is then ungated until somebody remembers to
+  # add it there too. `always()` matters: without it a cancelled or skipped
+  # dependency leaves this job skipped, which several interfaces read as
+  # passing.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: ci complete
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - scenario-library
+      - scenario-lint
+      - baseline-tools
+      - regression-gate
+      - lint
+      - terraform
+    if: always()
+    steps:
+      - name: Report the state of every gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS" | python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          results = json.loads(os.environ["RESULTS"])
+          failed = sorted(name for name, job in results.items() if job.get("result") != "success")
+          for name in sorted(results):
+              print("{:>12}  {}".format(results[name].get("result"), name))
+          if failed:
+              sys.exit("not successful: " + ", ".join(failed))
+          print("every gate passed")
+          PY
