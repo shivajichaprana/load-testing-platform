@@ -28,6 +28,18 @@ with the figure it rests on.
   prefix, with a committed query catalogue over it and two dashboards that
   keep what the target did apart from what the generator did.
 
+## Documentation
+
+This file is the argument: what the platform does and why each piece is shaped
+the way it is. Four documents carry the detail.
+
+| Document | For |
+|---|---|
+| [`docs/load-model.md`](docs/load-model.md) | the sizing arithmetic in full, with every derivation named, the exit-code vocabulary, and a worked example where changing one boolean turns a 14-worker fleet into one the quota refuses |
+| [`docs/authoring-scenarios.md`](docs/authoring-scenarios.md) | writing a scenario: the library reference, the check-and-threshold coupling, phase tagging, partitioning, and what to run before it reaches a fleet |
+| [`scenarios/README.md`](scenarios/README.md) | the profile table, the finding codes and the launch-contract inputs, in short form |
+| [`queries/README.md`](queries/README.md) | the two tables, the parameters, and the order the catalogue has to be read in |
+
 ## Sizing: the part that is usually wrong
 
 ### Throughput is an input or an output, never both
@@ -390,6 +402,77 @@ and the per-worker socket budget on the connections graph. A worker sitting on
 that second line cannot open a socket, and the failed request is recorded
 against the target's name, because that is what it was aimed at.
 
+## Reading a run
+
+A run produces figures long before it produces a verdict, and the order the
+figures are read in is not a matter of taste. Three questions have to be
+settled first, because a run that fails any of them measured something other
+than what it was launched for, and no precision further down repairs that.
+
+1. **Did the fleet that got placed match the fleet that was derived?**
+   `run-index.sql` carries `requested_workers`, `placed_workers`, the
+   shortfall, and the share of the fleet that was interruptible.
+2. **Did it offer the load it reports?** `offered-vs-achieved.sql` separates
+   `target_rate` from `effective_offered_rate` from the achieved rate, and its
+   `silent_workers` column names workers that were placed, billed, held an
+   address and wrote nothing.
+3. **Did the workers contribute evenly?** `worker-skew.sql` finds the worker
+   that stopped early or never reached its share. One reclaimed worker
+   withdraws its load mid-run, and in the target's own metrics that is
+   indistinguishable from the target degrading.
+
+Only then do the headline figures mean anything: `run-summary.sql` for the
+per-phase totals, `latency-percentiles.sql` for the brackets,
+`ladder-coverage.sql` to find out whether the tail was measured at all,
+`check-results.sql` and `error-taxonomy.sql` for what failed and how.
+
+Two columns in the summary are there to be read as part of the figure rather
+than beside it: `windows` and `latency_observations`. A percentile computed
+from one window is arithmetically identical to one computed from a thousand and
+means much less, and anything that cannot see the difference will quote both
+with equal confidence.
+
+### A percentile here is a bracket, not a number
+
+Percentiles are read off a merged bucket ladder, so each one is known only to
+the width of the bucket it falls in. The queries return the bracketing
+boundaries and the width between them rather than interpolating inside the
+bucket, and the comparison does interval arithmetic with them rather than
+subtraction. A difference narrower than a bucket cannot be resolved at all —
+which is a property of the data, not a shortcoming of the tool.
+
+### The verdict vocabulary
+
+`baseline/capture.py` turns one run's query output into a measurement document:
+the figures together with the conditions under which those figures mean
+anything — offered rate, placed workers, scenario, contract version and a
+fingerprint of the ladder. `baseline/compare.py` judges one such document
+against another, and its exit status is the whole interface a pipeline step
+reads:
+
+| Exit | Outcome | Means |
+|---|---|---|
+| `0` | pass | the candidate's whole interval sits at or below the allowed ceiling |
+| `1` | regressed | the candidate's whole interval sits above it |
+| `2` | unresolved | the interval straddles it, so nothing follows from the data |
+| `3` | void | the runs are not comparable; no verdict was taken |
+| `4` | usage | the input is not a pair of measurement documents |
+
+`void` and `regressed` are deliberately different. A run at a different offered
+rate, under a different ladder, or on a fleet that came up short is not a worse
+run — it is a measurement of something else, and it needs a different response
+from whoever reads the report.
+
+`unresolved` is not a hedge either, and it has a specific remedy the report
+prints: add a ladder boundary at the ceiling the gate tests against. That is
+the one place a bucket's width would otherwise decide the verdict. Refreshing
+the ladder invalidates every baseline captured under the old one — the
+fingerprint check says so — and that is the honest price of resolving a gate
+rather than guessing it.
+
+[`docs/load-model.md`](docs/load-model.md) has the conditions that void a
+comparison and why each one does.
+
 ## Why a per-run fleet rather than a long-lived one
 
 Workers are launched per run and are expected to exit. A scheduler that
@@ -435,6 +518,7 @@ the order tasks were placed in, for the run's record rather than for the run.
 | `tools/launch-fleet.py` | Fan-out launcher, reconciliation and the synchronized start |
 | `tools/publish-run-index.py` | Writes a launcher report as the run's row in the index |
 | `terraform.tfvars.example` | A worked objective with placeholder account values |
+| `docs/` | The load model in full, and the scenario authoring guide |
 
 ## Using it
 
