@@ -519,6 +519,7 @@ the order tasks were placed in, for the run's record rather than for the run.
 | `tools/publish-run-index.py` | Writes a launcher report as the run's row in the index |
 | `terraform.tfvars.example` | A worked objective with placeholder account values |
 | `docs/` | The load model in full, and the scenario authoring guide |
+| `Makefile` | Every gate the pipeline runs, with the same invocations |
 
 ## Using it
 
@@ -528,6 +529,10 @@ terraform init
 terraform output fleet_plan                    # size before deploying anything
 terraform plan
 ```
+
+`make size` prints the derived fleet, both per-worker bounds and the findings
+together, which is the reading that answers whether the objective is
+achievable at all.
 
 Launching, once the fleet is applied:
 
@@ -591,6 +596,46 @@ starts, reported as an image pull error rather than as a mismatch.
 
 Every account-specific value in this repository is a placeholder. Nothing here
 is applied against a real account on your behalf.
+
+## Working on it
+
+Every gate the pipeline runs is a target, with the same invocation on both
+sides, so a check cannot pass locally and fail in CI because the two were
+written separately. `make` on its own lists them.
+
+| Target | Does |
+|---|---|
+| `size` | the derived fleet, both bounds and the findings — needs no state and no credentials |
+| `validate` | format check, `init -backend=false`, `validate`, and the configuration lint |
+| `test` | both suites: the scenario library and the baseline tools |
+| `lint` | the Python and YAML linters, and the scenario import gate |
+| `run` | launch the fleet — prints a plan and exits unless `EXECUTE=1` |
+| `index` | publish the launcher's report as the run's row in the run index |
+| `capture` | turn a run's query output into a measurement document |
+| `compare` | judge a candidate against a baseline; the exit status is the verdict |
+| `report` | read a run: the catalogue in the order it has to be read, then the conditions the run was measured under |
+| `ci` | every gate above, in one command |
+
+Neither suite needs anything installed: the generator's built-in modules are
+substituted by a resolver hook and the Python suite uses the standard library's
+runner. `requirements-dev.txt` is needed to *check* a change, never to run one.
+
+```bash
+make                    # the target list
+make test lint          # what a change is gated on
+make size               # before creating anything
+
+make run SUBNET=subnet-0123456789abcdef0 TARGET_RATE=40000   # prints a plan
+make run SUBNET=subnet-0123456789abcdef0 TARGET_RATE=40000 EXECUTE=1 PUBLIC_IP=1
+
+make capture ROLE=candidate                                  # from query output
+make compare BASELINE=baseline/profiles/http-read.json
+make report RUN_ID=<the run>
+```
+
+Nothing here applies anything to a real account, and `run` without `EXECUTE=1`
+sends nothing — that is the launcher's own default rather than a convention
+added on top of it.
 
 ## Contributing
 
